@@ -23,6 +23,8 @@ export {
   openSseStream,
   parseSseBlock,
   pumpSseStream,
+  type SseBlock,
+  type SseStreamOptions,
   type StreamEventHandler,
   type StreamPayload,
 } from './sse.ts';
