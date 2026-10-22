@@ -48,6 +48,40 @@ test('returns null for a block with no data or invalid JSON', () => {
   assert.equal(parseSseBlock('data: not-json'), null, 'a malformed block is skipped, not thrown');
 });
 
+test('parses the frame id when the block carries one', () => {
+  assert.deepEqual(parseSseBlock('id: 42\nevent: token\ndata: {"text":"hi"}'), {
+    event: 'token',
+    data: { text: 'hi' },
+    id: '42',
+  });
+});
+
+test('leaves the id out when the block carries none', () => {
+  const parsed = parseSseBlock('event: token\ndata: {"text":"hi"}');
+  assert.ok(parsed);
+  assert.equal(parsed.id, undefined, 'no id at all');
+  assert.deepEqual(Object.keys(parsed).sort(), ['data', 'event'], 'not even an id key — an old caller sees the same shape');
+});
+
+test('trims the id and ignores an empty one', () => {
+  assert.equal(parseSseBlock('id:  7 \ndata: {}')?.id, '7');
+  assert.equal(parseSseBlock('id:\ndata: {}')?.id, undefined, 'an empty id is no id');
+});
+
+test('pump hands the frame id to the handler', async () => {
+  const seen: Array<[string, string | undefined]> = [];
+  await pumpSseStream(
+    streamResponse(['id: 1\nevent: a\ndata: {"n":1}\n\n', 'event: b\ndata: {"n":2}\n\n']),
+    (event, _data, id) => {
+      seen.push([event, id]);
+    },
+  );
+  assert.deepEqual(seen, [
+    ['a', '1'],
+    ['b', undefined],
+  ]);
+});
+
 test('pump emits each complete block in order', async () => {
   const events = await collect(
     streamResponse(['event: a\ndata: {"n":1}\n\n', 'event: b\ndata: {"n":2}\n\n']),
@@ -127,3 +161,49 @@ test('open POSTs the body with SSE headers', async () => {
   assert.equal((seen?.headers as Record<string, string>)['Accept'], 'text/event-stream');
   assert.equal(seen?.body, '{"prompt":"hi"}');
 });
+
+test('open GETs without a body and carries the extra headers', async () => {
+  let seen: RequestInit | undefined;
+  const impl: FetchLike = async (_url, init) => {
+    seen = init;
+    return streamResponse(['data: {}\n\n']);
+  };
+  await openSseStream(['http://up'], '/runs/abc/events', undefined, impl, {
+    method: 'GET',
+    headers: { 'Last-Event-ID': '3' },
+  });
+
+  assert.equal(seen?.method, 'GET');
+  assert.equal(seen?.body, undefined, 'a GET stream sends no body');
+  assert.equal((seen?.headers as Record<string, string>)['Last-Event-ID'], '3');
+  assert.equal((seen?.headers as Record<string, string>)['Content-Type'], undefined, 'no body, no content type');
+});
+
+test('open passes the abort signal to the request', async () => {
+  const controller = new AbortController();
+  let seen: RequestInit | undefined;
+  const impl: FetchLike = async (_url, init) => {
+    seen = init;
+    return streamResponse(['data: {}\n\n']);
+  };
+  await openSseStream(['http://up'], '/chat', {}, impl, { signal: controller.signal });
+
+  assert.equal(seen?.signal, controller.signal);
+});
+
+test('open stops at the first origin when the request is aborted', async () => {
+  const controller = new AbortController();
+  const tried: string[] = [];
+  const impl: FetchLike = async (url) => {
+    tried.push(url);
+    controller.abort();
+    throw new DOMException('The operation was aborted.', 'AbortError');
+  };
+
+  await assert.rejects(
+    openSseStream(['http://a', 'http://b'], '/chat', {}, impl, { signal: controller.signal }),
+    /aborted/i,
+  );
+  assert.deepEqual(tried, ['http://a/chat'], 'an abort is not a failed origin — the list is not walked');
+});
+
