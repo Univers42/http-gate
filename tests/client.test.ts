@@ -195,3 +195,25 @@ test('a failing request frees its slot for the queue', async () => {
   await assert.rejects(client.get('/b'), /network down/);
   assert.deepEqual(await client.get('/c'), { ok: true });
 });
+
+// osionos#287: the bridge relayed the WAF's nginx page in its message, and the app toasted the HTML.
+const NGINX_403 = 'BaaS request failed with 403: <html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx/1.28.2</center>\r\n</body>\r\n</html>';
+
+test('an HTML error page in the message becomes one sentence with the status', async () => {
+  const { impl } = stubFetch(() => json({ ok: false, message: NGINX_403 }, 403));
+  const client = createHttpClient({ baseUrl: 'https://api.test', fetchImpl: impl });
+  const error = await client.post('/api/pages', {}).catch((caught: unknown) => caught);
+  assert.ok(error instanceof ApiError);
+  assert.equal(error.message, "The server's request filter refused this request (403).");
+  assert.equal(error.status, 403);
+  assert.doesNotMatch(error.message, /<|nginx/);
+});
+
+test('an HTML page with another status names that status; a plain message is kept as it is', async () => {
+  const page = stubFetch(() => json({ message: '<!DOCTYPE html><title>502 Bad Gateway</title>' }, 502));
+  const pageError = await createHttpClient({ baseUrl: 'https://api.test', fetchImpl: page.impl }).get('/x').catch((caught: unknown) => caught);
+  assert.equal((pageError as ApiError).message, 'The server answered 502 with an error page instead of a message.');
+  const plain = stubFetch(() => json({ message: 'Use a < b in your query.' }, 422));
+  const plainError = await createHttpClient({ baseUrl: 'https://api.test', fetchImpl: plain.impl }).get('/x').catch((caught: unknown) => caught);
+  assert.equal((plainError as ApiError).message, 'Use a < b in your query.');
+});

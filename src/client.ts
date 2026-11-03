@@ -8,7 +8,7 @@
  * host, not to the transport.
  */
 
-import { ApiError, type ApiErrorBody } from './errors.ts';
+import { ApiError, readableServerMessage, type ApiErrorBody } from './errors.ts';
 import { createInflightDedupe, createRequestGate } from './gate.ts';
 
 /** Minimal `fetch` shape, so a test can inject a stub without a network. */
@@ -68,7 +68,7 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       if (!res.ok) {
         const errorBody = (await res.json().catch(() => null)) as ApiErrorBody | null;
         throw new ApiError(
-          errorBody?.error ?? errorBody?.message ?? `${method} ${path} → ${res.status} ${res.statusText}`,
+          readableServerMessage(errorBody?.error ?? errorBody?.message ?? `${method} ${path} → ${res.status} ${res.statusText}`, res.status),
           res.status,
           errorBody?.code ?? 'API_ERROR',
           errorBody?.details,
